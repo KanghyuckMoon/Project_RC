@@ -19,12 +19,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "tim.h"
-#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "car_app.h"
+#include "motor_driver.h"
 
 /* USER CODE END Includes */
 
@@ -35,6 +34,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MOTOR_TEST_PWM 40
+#define MOTOR_TEST_START_DELAY_MS 3000U
+#define MOTOR_TEST_RUN_MS 1000U
+#define MOTOR_TEST_PAUSE_MS 1000U
 
 /* USER CODE END PD */
 
@@ -57,6 +60,15 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void RunMotorTestStep(int motor_a, int motor_b)
+{
+  MotorA(motor_a);
+  MotorB(motor_b);
+  HAL_Delay(MOTOR_TEST_RUN_MS);
+
+  MotorA(0);
+  MotorB(0);
+}
 
 /* USER CODE END 0 */
 
@@ -90,10 +102,17 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM2_Init();
-  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  /* Initialize motors, HC-SR04 and ZS-040; start stopped in manual mode. */
-  CarApp_Init();
+  MotorDriver_Init();
+  HAL_Delay(MOTOR_TEST_START_DELAY_MS);
+
+  RunMotorTestStep(MOTOR_TEST_PWM, 0);
+  HAL_Delay(MOTOR_TEST_PAUSE_MS);
+  RunMotorTestStep(0, MOTOR_TEST_PWM);
+  HAL_Delay(MOTOR_TEST_PAUSE_MS);
+  RunMotorTestStep(MOTOR_TEST_PWM, MOTOR_TEST_PWM);
+  HAL_Delay(MOTOR_TEST_PAUSE_MS);
+  RunMotorTestStep(-MOTOR_TEST_PWM, -MOTOR_TEST_PWM);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -103,8 +122,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* Process Bluetooth commands, wall detection and motor outputs. */
-    CarApp_Update();
+    /* Keep the motors stopped until the next reset. */
     HAL_Delay(1);
   }
   /* USER CODE END 3 */
