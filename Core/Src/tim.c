@@ -21,6 +21,7 @@
 #include "tim.h"
 
 /* USER CODE BEGIN 0 */
+#include "motor_driver.h"
 
 /* USER CODE END 0 */
 

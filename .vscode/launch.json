@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Project_Race (ST-LINK SWD 140 kHz)",
+            "type": "stlinkgdbtarget",
+            "request": "launch",
+            "deviceName": "STM32F411RE",
+            "cwd": "${workspaceFolder}",
+            "imagesAndSymbols": [
+                {
+                    "imageFileName": "${workspaceFolder}/build/Debug/Project_Race.elf"
+                }
+            ],
+            "runEntry": "main",
+            "serverInterface": "SWD",
+            "serverInterfaceFrequency": "140",
+            "serverReset": "Connect under reset",
+            "verbose": true,
+            "logFile": "${workspaceFolder}/build/Debug/gdbClient_log.txt",
+            "serverLogFile": "${workspaceFolder}/build/Debug/stlinkgdbserver_log.txt"
+        }
+    ]
+}

@@ -19,10 +19,12 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "tim.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "car_app.h"
 
 /* USER CODE END Includes */
 
@@ -55,53 +57,7 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void MotorA(int speed)
-{
-    if (speed > 100) speed = 100;
-    if (speed < -100) speed = -100;
 
-    if (speed > 0)
-    {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
-    }
-    else if (speed < 0)
-    {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
-    }
-    else
-    {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0 | GPIO_PIN_1, GPIO_PIN_RESET);
-    }
-
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1,
-                          speed < 0 ? -speed : speed);
-}
-
-void MotorB(int speed)
-{
-    if (speed > 100) speed = 100;
-    if (speed < -100) speed = -100;
-
-    if (speed > 0)
-    {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-    }
-    else if (speed < 0)
-    {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
-    }
-    else
-    {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_RESET);
-    }
-
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2,
-                          speed < 0 ? -speed : speed);
-}
 /* USER CODE END 0 */
 
 /**
@@ -134,25 +90,22 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM2_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-
-MotorA(0);
-MotorB(0);
+  /* Initialize motors, HC-SR04 and ZS-040; start stopped in manual mode. */
+  CarApp_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    MotorA(70);
-    MotorB(0);
-    HAL_Delay(1000);
-    
-    MotorA(0);
-    MotorB(70);
-    HAL_Delay(1000);
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    /* Process Bluetooth commands, wall detection and motor outputs. */
+    CarApp_Update();
+    HAL_Delay(1);
   }
   /* USER CODE END 3 */
 }

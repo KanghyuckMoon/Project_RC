@@ -44,12 +44,21 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    Core/Src/Control/car_app.c
+    Core/Src/Control/car_control.c
+    Core/Src/Dirver/Ultrasonic/hc_sr04.c
+    Core/Src/Dirver/Bluetooth/zs040.c
+    Core/Src/Dirver/MotorDriver/motor_driver.c
+    Core/Src/Dirver/MotorDriver/wheel_distance.c
+    Core/Src/Dirver/MotorDriver/distance_drive.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
+    Core/Src/Dirver/MotorDriver
+    Core/Src/Dirver/Ultrasonic
+    Core/Src/Dirver/Bluetooth
+    Core/Src/Control
 )
 
 # Add project symbols (macros)
