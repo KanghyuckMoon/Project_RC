@@ -3,6 +3,7 @@
 #include <string.h>
 
 #define RX_SIZE 64U
+#define TX_SIZE 48U
 static volatile uint8_t data[RX_SIZE];
 static volatile uint32_t ticks[RX_SIZE];
 static volatile uint32_t head, tail;
@@ -10,6 +11,8 @@ static volatile uint8_t fault;
 volatile ZS040ConfigStatus zs040_config_status;
 static ZS040ConfigStatus config_result;
 static unsigned config_step, tx_index, response_length;
+static char tx_buffer[TX_SIZE];
+static uint8_t tx_length, tx_offset;
 static uint32_t step_ms, last_rx_ms;
 static char response[32];
 static const char *const commands[] = {
@@ -42,6 +45,7 @@ void ZS040_Init(void)
     zs040_config_status = ZS040_CONFIG_WAITING;
     config_result = ZS040_CONFIG_OK;
     config_step = tx_index = response_length = 0;
+    tx_length = tx_offset = 0;
     step_ms = HAL_GetTick();
     USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE |
                   USART_CR1_RXNEIE | USART_CR1_PEIE;
@@ -101,6 +105,17 @@ uint8_t ZS040_Read(uint8_t *byte, uint32_t *received_ms)
     return ReadRx(byte, received_ms);
 }
 
+uint8_t ZS040_Write(const char *bytes, uint8_t length)
+{
+    if (zs040_config_status == ZS040_CONFIG_WAITING || tx_offset != tx_length ||
+        !length || length > sizeof(tx_buffer))
+        return 0;
+    memcpy(tx_buffer, bytes, length);
+    tx_offset = 0;
+    tx_length = length;
+    return 1;
+}
+
 static void ClearRx(void)
 {
     uint32_t irq = __get_PRIMASK();
@@ -130,7 +145,12 @@ static uint8_t ResponseMatches(unsigned command)
 
 void ZS040_Update(void)
 {
-    if (zs040_config_status != ZS040_CONFIG_WAITING) return;
+    if (zs040_config_status != ZS040_CONFIG_WAITING)
+    {
+        if (tx_offset < tx_length && (USART1->SR & USART_SR_TXE))
+            USART1->DR = (uint8_t)tx_buffer[tx_offset++];
+        return;
+    }
     uint32_t now = HAL_GetTick();
     if (config_step == 7)
     {

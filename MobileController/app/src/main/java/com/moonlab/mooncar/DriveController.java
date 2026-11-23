@@ -3,6 +3,7 @@ package com.moonlab.mooncar;
 /** App-side state and the byte protocol implemented by car_control.c. */
 final class DriveController {
     enum Mode { MANUAL, AUTO_STOPPED, AUTO_MOVING }
+    enum Pedal { RELEASED, FORWARD, REVERSE }
 
     interface Output {
         boolean send(String bytes, boolean recurring);
@@ -11,7 +12,7 @@ final class DriveController {
     private static final int TURN_THRESHOLD = 16;
     private final Output output;
     private boolean connected;
-    private boolean pedal;
+    private Pedal pedal = Pedal.RELEASED;
     private int angle;
     private int speed = 70;
     private Mode mode = Mode.MANUAL;
@@ -33,9 +34,9 @@ final class DriveController {
 
     void selectMode(boolean autonomous) {
         if (!connected || autonomous == (mode != Mode.MANUAL)) return;
-        if (output.send(autonomous ? "SA" : "SM", false)) {
+        if (output.send(autonomous ? "SAF" : "SM", false)) {
             clearInputs();
-            mode = autonomous ? Mode.AUTO_STOPPED : Mode.MANUAL;
+            mode = autonomous ? Mode.AUTO_MOVING : Mode.MANUAL;
         }
     }
 
@@ -62,25 +63,33 @@ final class DriveController {
         updateMotion();
     }
 
-    void pedal(boolean pressed) {
-        pedal = pressed;
+    void setPedal(Pedal pedal) {
+        this.pedal = pedal;
         updateMotion();
     }
 
-    void repeatManual() {
-        if (connected && mode == Mode.MANUAL && motion != 'S') {
-            output.send(packet(motion), true);
-        }
+    void repeat(boolean pollSensors) {
+        if (!connected) return;
+        String query = pollSensors ? "?" : "";
+        if (mode == Mode.MANUAL && motion != 'S') output.send(packet(motion) + query, true);
+        else if (pollSensors) output.send(query, true);
     }
 
     private void updateMotion() {
         if (!connected || mode != Mode.MANUAL) return;
-        char next = 'S';
-        if (pedal && speed > 0) {
-            next = angle <= -TURN_THRESHOLD ? 'G' : angle >= TURN_THRESHOLD ? 'I' : 'F';
-        }
+        char next = directionCommand();
         if (motion == next) return;
         if (output.send(next == 'S' ? "S" : packet(next), false)) motion = next;
+    }
+
+    private char directionCommand() {
+        if (speed == 0 || pedal == Pedal.RELEASED) return 'S';
+
+        // The car turns opposite to the firmware's nominal left/right labels.
+        boolean left = angle <= -TURN_THRESHOLD;
+        boolean right = angle >= TURN_THRESHOLD;
+        if (pedal == Pedal.FORWARD) return left ? 'I' : right ? 'G' : 'F';
+        return left ? 'J' : right ? 'H' : 'L';
     }
 
     private String packet(char direction) {
@@ -89,7 +98,7 @@ final class DriveController {
     }
 
     private void clearInputs() {
-        pedal = false;
+        pedal = Pedal.RELEASED;
         angle = 0;
         motion = 'S';
     }

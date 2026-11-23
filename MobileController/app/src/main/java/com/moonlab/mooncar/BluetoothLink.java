@@ -19,13 +19,19 @@ final class BluetoothLink {
         void onLinkState(State state, String detail);
     }
 
+    interface TelemetryListener {
+        void onTelemetry(UltrasonicTelemetry telemetry);
+    }
+
     private static final UUID SPP = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Listener listener;
+    private final TelemetryListener telemetryListener;
     private Session current;
 
-    BluetoothLink(Listener listener) {
+    BluetoothLink(Listener listener, TelemetryListener telemetryListener) {
         this.listener = listener;
+        this.telemetryListener = telemetryListener;
     }
 
     // The activity calls these methods on the main thread.
@@ -147,8 +153,17 @@ final class BluetoothLink {
         private void watchConnection(InputStream input) {
             try {
                 byte[] buffer = new byte[64];
-                while (input.read(buffer) != -1) {
-                    // The firmware currently sends no vehicle telemetry.
+                UltrasonicTelemetry.Decoder decoder = new UltrasonicTelemetry.Decoder();
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    UltrasonicTelemetry frame = decoder.receive(buffer, count);
+                    if (frame == null) continue;
+                    main.post(() -> {
+                        synchronized (this) {
+                            if (current != this || closed || stopping) return;
+                        }
+                        telemetryListener.onTelemetry(frame);
+                    });
                 }
             } catch (IOException ignored) {
                 // A closed or failed connection is handled below.

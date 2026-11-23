@@ -91,6 +91,7 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
+  MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
   /* Initialize motors, HC-SR04 and ZS-040; start stopped in manual mode. */
   CarApp_Init();

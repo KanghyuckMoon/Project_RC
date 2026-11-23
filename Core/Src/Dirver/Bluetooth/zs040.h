@@ -42,6 +42,8 @@ void ZS040_Update(void);
 void ZS040_Init(void);
 void ZS040_RxIRQ(void);
 uint8_t ZS040_Read(uint8_t *byte, uint32_t *received_ms);
+/* Copies one reply for nonblocking transmission. Returns 0 if busy. */
+uint8_t ZS040_Write(const char *bytes, uint8_t length);
 /* Consumes transport fault and discards queued commands. */
 uint8_t ZS040_TakeFault(void);
 #endif

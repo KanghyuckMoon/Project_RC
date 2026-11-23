@@ -6,7 +6,10 @@ import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
@@ -30,7 +33,6 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 public final class MainActivity extends Activity {
@@ -42,18 +44,43 @@ public final class MainActivity extends Activity {
     private static final int ACCENT = 0xffdafa53;
     private static final int RED = 0xffff8d88;
     private static final int PERMISSION_REQUEST = 1;
+    private static final String[] SENSOR_LABELS = {
+            "전방 · PB0/PB1", "좌측 · PC4/PC5", "우측 · PC6/PC7"
+    };
 
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final BluetoothLink link = new BluetoothLink(this::onLinkState);
+    private final BluetoothLink link = new BluetoothLink(this::onLinkState, this::onTelemetry);
     private final DriveController drive = new DriveController(link::send);
+    private final Runnable telemetryDeadline = () -> clearTelemetry("센서 정보 수신 없음");
+    private final Runnable pairingTimeout = () -> cancelPairing("페어링 시간이 초과됐습니다");
+    private final BroadcastReceiver pairingReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            BluetoothDevice device = BluetoothPicker.deviceFrom(intent);
+            if (device == null || !device.equals(pendingPairing)) return;
+            int state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
+            if (state == BluetoothDevice.BOND_BONDED) {
+                finishPairing();
+            } else if (state == BluetoothDevice.BOND_NONE) {
+                cancelPairing("페어링이 완료되지 않았습니다");
+            }
+        }
+    };
     private final Runnable repeat = new Runnable() {
+        private int sensorTicks;
+
         @Override public void run() {
-            drive.repeatManual();
+            drive.repeat(sensorTicks == 0);
+            sensorTicks = (sensorTicks + 1) % 3;
             main.postDelayed(this, 120);
         }
     };
 
     private BluetoothLink.State linkState = BluetoothLink.State.DISCONNECTED;
+    private BluetoothPicker picker;
+    private BluetoothDevice pendingPairing;
+    private String pairingName;
+    private boolean pairingReceiverRegistered;
     private LinearLayout root;
     private TextView connectionStatus;
     private Button connectionButton;
@@ -61,12 +88,17 @@ public final class MainActivity extends Activity {
     private Button autoButton;
     private TextView modeStatus;
     private TextView speedValue;
+    private final TextView[] sensorReadings = new TextView[SENSOR_LABELS.length];
+    private TextView autoOutput;
+    private UltrasonicTelemetry telemetry;
     private TextView steeringValue;
     private SteeringWheel wheel;
     private SeekBar speedControl;
     private LinearLayout manualControls;
     private LinearLayout autoControls;
     private Button pedal;
+    private Button reversePedal;
+    private View activePedal;
     private Button autoStart;
     private Button stop;
     private boolean foreground;
@@ -98,14 +130,26 @@ public final class MainActivity extends Activity {
         foreground = true;
         main.post(repeat);
         hideBars();
+        finishPairing();
     }
 
     @Override
     protected void onPause() {
         foreground = false;
         main.removeCallbacks(repeat);
+        main.removeCallbacks(telemetryDeadline);
+        if (picker != null) {
+            picker.dismiss();
+            picker = null;
+        }
         link.disconnect();
         super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        clearPairing();
+        super.onDestroy();
     }
 
     @SuppressWarnings("deprecation")
@@ -154,7 +198,8 @@ public final class MainActivity extends Activity {
         connectionButton = button("블루투스 연결", 13);
         styleButton(connectionButton, 0xff232c34, ACCENT);
         connectionButton.setOnClickListener(view -> {
-            if (linkState == BluetoothLink.State.DISCONNECTED) chooseDevice();
+            if (pendingPairing != null) cancelPairing("연결 안 됨");
+            else if (linkState == BluetoothLink.State.DISCONNECTED) chooseDevice();
             else link.disconnect();
         });
         LinearLayout.LayoutParams connectParams = new LinearLayout.LayoutParams(-2, -1);
@@ -170,7 +215,25 @@ public final class MainActivity extends Activity {
         addCard(body, modePanel(), 1.05f);
         addCard(body, pedalPanel(), 1.02f);
 
+        LinearLayout.LayoutParams telemetryParams = new LinearLayout.LayoutParams(-1, dp(53));
+        telemetryParams.topMargin = dp(8);
+        root.addView(ultrasonicPanel(), telemetryParams);
         setContentView(root);
+    }
+
+    private LinearLayout ultrasonicPanel() {
+        LinearLayout panel = row();
+        for (int i = 0; i < SENSOR_LABELS.length; i++) {
+            LinearLayout tile = column();
+            tile.setPadding(dp(10), dp(3), dp(10), dp(3));
+            tile.setBackground(shape(PANEL, BORDER));
+            tile.addView(label(SENSOR_LABELS[i], 11, MUTED, true),
+                    new LinearLayout.LayoutParams(-1, dp(17)));
+            sensorReadings[i] = label("연결 대기", 13, MUTED, true);
+            tile.addView(sensorReadings[i], new LinearLayout.LayoutParams(-1, 0, 1));
+            addCard(panel, tile, 1);
+        }
+        return panel;
     }
 
     private LinearLayout steeringPanel() {
@@ -243,43 +306,28 @@ public final class MainActivity extends Activity {
         });
         manualControls.addView(speedControl, new LinearLayout.LayoutParams(-1, dp(42)));
 
-        pedal = button("↑\n가속 페달", 22);
+        LinearLayout pedals = row();
+        pedal = button("↑\n가속", 20);
         styleButton(pedal, ACCENT, BACKGROUND);
         pedal.setContentDescription("가속 페달, 누르는 동안 전진");
-        pedal.setOnTouchListener((view, event) -> {
-            if (!view.isEnabled()) return false;
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    pedalPointer = event.getPointerId(event.getActionIndex());
-                    view.setPressed(true);
-                    drive.pedal(true);
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    int index = event.findPointerIndex(pedalPointer);
-                    if (index >= 0 && (event.getX(index) < -dp(20) || event.getY(index) < -dp(20)
-                            || event.getX(index) > view.getWidth() + dp(20)
-                            || event.getY(index) > view.getHeight() + dp(20))) {
-                        releasePedal();
-                    }
-                    return true;
-                case MotionEvent.ACTION_POINTER_UP:
-                    if (event.getPointerId(event.getActionIndex()) == pedalPointer) releasePedal();
-                    return true;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    releasePedal();
-                    return true;
-                default:
-                    return true;
-            }
-        });
-        manualControls.addView(pedal, new LinearLayout.LayoutParams(-1, 0, 1));
+        pedal.setOnTouchListener((view, event) -> handlePedalTouch(view, event, DriveController.Pedal.FORWARD));
+        pedals.addView(pedal, new LinearLayout.LayoutParams(0, -1, 1));
+
+        reversePedal = button("↓\n후진", 20);
+        styleButton(reversePedal, 0xff2e3b51, TEXT);
+        reversePedal.setContentDescription("후진 페달, 누르는 동안 후진");
+        reversePedal.setOnTouchListener((view, event) ->
+                handlePedalTouch(view, event, DriveController.Pedal.REVERSE));
+        LinearLayout.LayoutParams reverseParams = new LinearLayout.LayoutParams(0, -1, 1);
+        reverseParams.leftMargin = dp(6);
+        pedals.addView(reversePedal, reverseParams);
+        manualControls.addView(pedals, new LinearLayout.LayoutParams(-1, 0, 1));
 
         autoControls = column();
         actions.addView(autoControls, new FrameLayout.LayoutParams(-1, -1));
-        TextView autoLabel = label("차량 FSM", 13, MUTED, false);
-        autoControls.addView(autoLabel, new LinearLayout.LayoutParams(-1, dp(36)));
-        autoStart = button("▶\n이동 시작", 22);
+        autoOutput = label("모터 출력 대기", 13, MUTED, false);
+        autoControls.addView(autoOutput, new LinearLayout.LayoutParams(-1, dp(36)));
+        autoStart = button("▶\n주행 재개", 22);
         styleButton(autoStart, ACCENT, BACKGROUND);
         autoStart.setOnClickListener(view -> {
             drive.startAuto();
@@ -302,17 +350,55 @@ public final class MainActivity extends Activity {
         render();
     }
 
+    private boolean handlePedalTouch(View view, MotionEvent event, DriveController.Pedal direction) {
+        if (!view.isEnabled()) return false;
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN && activePedal == null) {
+            activePedal = view;
+            pedalPointer = event.getPointerId(event.getActionIndex());
+            view.setPressed(true);
+            drive.setPedal(direction);
+            return true;
+        }
+        if (activePedal != view) return true;
+
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_MOVE:
+                int index = event.findPointerIndex(pedalPointer);
+                if (index < 0 || event.getX(index) < -dp(20) || event.getY(index) < -dp(20)
+                        || event.getX(index) > view.getWidth() + dp(20)
+                        || event.getY(index) > view.getHeight() + dp(20)) {
+                    releasePedal();
+                }
+                break;
+            case MotionEvent.ACTION_POINTER_UP:
+                if (event.getPointerId(event.getActionIndex()) == pedalPointer) releasePedal();
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                releasePedal();
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
     private void releasePedal() {
+        clearPedalPress();
+        drive.setPedal(DriveController.Pedal.RELEASED);
+    }
+
+    private void clearPedalPress() {
+        if (activePedal == null) return;
+        activePedal.setPressed(false);
+        activePedal = null;
         pedalPointer = -1;
-        pedal.setPressed(false);
-        drive.pedal(false);
     }
 
     private void resetVisualInputs() {
         wheel.center();
         showAngle(0);
-        pedalPointer = -1;
-        pedal.setPressed(false);
+        clearPedalPress();
     }
 
     private void showAngle(int angle) {
@@ -325,6 +411,9 @@ public final class MainActivity extends Activity {
 
     private void onLinkState(BluetoothLink.State state, String detail) {
         linkState = state;
+        main.removeCallbacks(telemetryDeadline);
+        clearTelemetry(state == BluetoothLink.State.CONNECTED ? "센서 정보 수신 대기" : "연결 대기");
+        if (state == BluetoothLink.State.CONNECTED) main.postDelayed(telemetryDeadline, 1800);
         drive.setConnected(state == BluetoothLink.State.CONNECTED);
         resetVisualInputs();
         connectionStatus.setText(detail == null ? "연결 안 됨" : detail);
@@ -334,6 +423,39 @@ public final class MainActivity extends Activity {
                 : state == BluetoothLink.State.DISCONNECTING ? "연결 종료 중" : "블루투스 연결");
         connectionButton.setEnabled(state != BluetoothLink.State.DISCONNECTING);
         render();
+    }
+
+    private void clearTelemetry(String message) {
+        telemetry = null;
+        for (TextView reading : sensorReadings) {
+            reading.setText(message);
+            reading.setTextColor(MUTED);
+        }
+        autoOutput.setText("모터 출력 대기");
+        showModeStatus();
+    }
+
+    private void onTelemetry(UltrasonicTelemetry frame) {
+        telemetry = frame;
+        for (int i = 0; i < sensorReadings.length; i++) {
+            UltrasonicTelemetry.Reading reading = frame.readings[i];
+            TextView view = sensorReadings[i];
+            switch (reading.status) {
+                case 'D': view.setText(reading.cm + " cm"); break;
+                case 'F': view.setText("400 cm 초과"); break;
+                case 'N': view.setText("응답 없음 · 연결 확인"); break;
+                case 'H': view.setText("ECHO HIGH · 배선 확인"); break;
+                case 'P': view.setText("짧은 펄스"); break;
+                case 'S': view.setText("측정 지연"); break;
+                default: view.setText("측정 대기"); break;
+            }
+            view.setTextColor(reading.status == 'D' || reading.status == 'F' ? ACCENT
+                    : reading.status == 'W' ? MUTED : RED);
+        }
+        autoOutput.setText("PWM  A " + frame.motorA + "%  B " + frame.motorB + "%");
+        showModeStatus();
+        main.removeCallbacks(telemetryDeadline);
+        main.postDelayed(telemetryDeadline, 1800);
     }
 
     private void render() {
@@ -346,24 +468,44 @@ public final class MainActivity extends Activity {
         wheel.setAlpha(manual ? 1f : 0.38f);
         speedControl.setEnabled(connected);
         pedal.setEnabled(connected);
+        reversePedal.setEnabled(connected);
         autoStart.setEnabled(connected && !autoMoving);
         stop.setEnabled(connected);
         manualButton.setEnabled(connected);
         autoButton.setEnabled(connected);
         styleButton(manualButton, manual ? ACCENT : 0xff252b37, manual ? BACKGROUND : TEXT);
         styleButton(autoButton, manual ? 0xff252b37 : ACCENT, manual ? TEXT : BACKGROUND);
-        modeStatus.setText(!connected ? "연결 대기" : manual ? "수동 조종"
-                : autoMoving ? "이동 명령 전송" : "정지 · 이동 대기");
+        showModeStatus();
         showSpeed();
     }
 
+    private void showModeStatus() {
+        if (linkState != BluetoothLink.State.CONNECTED) modeStatus.setText("연결 대기");
+        else if (drive.mode() == DriveController.Mode.MANUAL) modeStatus.setText("수동 조종");
+        else if (drive.mode() == DriveController.Mode.AUTO_STOPPED) modeStatus.setText("정지 · 재개 대기");
+        else if (telemetry == null) modeStatus.setText("차량 상태 수신 대기");
+        else if (telemetry.motorA == 0 && telemetry.motorB == 0) modeStatus.setText("거리 확인 · 정지");
+        else if (telemetry.motorA < 0 && telemetry.motorB < 0) modeStatus.setText("후진");
+        else if (telemetry.motorA < 0 || telemetry.motorB < 0) modeStatus.setText("제자리 회전");
+        else if (telemetry.motorA != telemetry.motorB) modeStatus.setText("코너링");
+        else modeStatus.setText("전진");
+    }
+
     private void chooseDevice() {
-        if (Build.VERSION.SDK_INT >= 31
-                && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, PERMISSION_REQUEST);
+        List<String> permissions = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 31 && !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT);
+        }
+        if (!hasPermission(scanPermission())) permissions.add(scanPermission());
+        if (permissions.isEmpty()) openPicker();
+        else requestPermissions(permissions.toArray(new String[0]), PERMISSION_REQUEST);
+    }
+
+    private void openPicker() {
+        if (Build.VERSION.SDK_INT >= 31 && !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+            connectionStatus.setText("근처 기기 권한이 필요합니다");
             return;
         }
-
         BluetoothManager manager = getSystemService(BluetoothManager.class);
         BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
         if (adapter == null) {
@@ -376,35 +518,78 @@ public final class MainActivity extends Activity {
         }
 
         try {
-            List<BluetoothDevice> devices = new ArrayList<>(adapter.getBondedDevices());
-            Collections.sort(devices, (first, second) ->
-                    deviceLabel(first).compareToIgnoreCase(deviceLabel(second)));
-            if (devices.isEmpty()) {
-                showPairingSettings("Android 설정에서 먼저 MoonCar 또는 HC-06을 페어링해 주세요.");
-                return;
-            }
-            String[] labels = new String[devices.size()];
-            for (int i = 0; i < devices.size(); i++) {
-                BluetoothDevice device = devices.get(i);
-                labels[i] = deviceLabel(device) + "\n" + device.getAddress();
-            }
-            new AlertDialog.Builder(this)
-                    .setTitle("페어링된 블루투스 기기")
-                    .setItems(labels, (dialog, index) -> {
-                        BluetoothDevice device = devices.get(index);
-                        link.connect(device, deviceLabel(device));
-                    })
-                    .setNeutralButton("설정", (dialog, choice) -> openBluetoothSettings())
-                    .setNegativeButton("취소", null)
-                    .show();
+            picker = new BluetoothPicker(this, adapter, this::connectDevice, this::openBluetoothSettings);
+            picker.show(hasPermission(scanPermission()));
         } catch (SecurityException error) {
             connectionStatus.setText("근처 기기 권한을 확인해 주세요");
         }
     }
 
-    private String deviceLabel(BluetoothDevice device) {
-        String name = device.getName();
-        return name == null || name.trim().isEmpty() ? "이름 없는 기기" : name;
+    private boolean hasPermission(String permission) {
+        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private String scanPermission() {
+        return Build.VERSION.SDK_INT >= 31
+                ? Manifest.permission.BLUETOOTH_SCAN : Manifest.permission.ACCESS_FINE_LOCATION;
+    }
+
+    private void connectDevice(BluetoothDevice device, String name) {
+        try {
+            if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                link.connect(device, name);
+                return;
+            }
+            // Finish pairing before opening RFCOMM. The Android PIN screen can pause this activity.
+            pendingPairing = device;
+            pairingName = name;
+            IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(pairingReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(pairingReceiver, filter);
+            }
+            pairingReceiverRegistered = true;
+            connectionStatus.setText("페어링 중 · " + name);
+            connectionButton.setText("연결 취소");
+            main.postDelayed(pairingTimeout, 60_000);
+            int bondState = device.getBondState();
+            if (bondState == BluetoothDevice.BOND_BONDED) {
+                finishPairing();
+            } else if (bondState != BluetoothDevice.BOND_BONDING && !device.createBond()) {
+                cancelPairing("페어링을 시작할 수 없습니다");
+            }
+        } catch (SecurityException error) {
+            cancelPairing("근처 기기 권한을 확인해 주세요");
+        }
+    }
+
+    private void finishPairing() {
+        if (!foreground || pendingPairing == null) return;
+        try {
+            if (pendingPairing.getBondState() != BluetoothDevice.BOND_BONDED) return;
+            BluetoothDevice device = pendingPairing;
+            String name = pairingName;
+            clearPairing();
+            link.connect(device, name);
+        } catch (SecurityException error) {
+            cancelPairing("근처 기기 권한을 확인해 주세요");
+        }
+    }
+
+    private void cancelPairing(String message) {
+        clearPairing();
+        onLinkState(BluetoothLink.State.DISCONNECTED, message);
+    }
+
+    private void clearPairing() {
+        main.removeCallbacks(pairingTimeout);
+        if (pairingReceiverRegistered) {
+            unregisterReceiver(pairingReceiver);
+            pairingReceiverRegistered = false;
+        }
+        pendingPairing = null;
+        pairingName = null;
     }
 
     private void showPairingSettings(String message) {
@@ -420,12 +605,7 @@ public final class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode != PERMISSION_REQUEST) return;
-        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
-            chooseDevice();
-        } else {
-            connectionStatus.setText("근처 기기 권한이 필요합니다");
-        }
+        if (requestCode == PERMISSION_REQUEST) openPicker();
     }
 
     private void addCard(LinearLayout body, LinearLayout card, float width) {
