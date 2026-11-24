@@ -1,0 +1,532 @@
+<section id="mooncar-layout">
+  <h2>MoonCar 조립 배치</h2>
+  <div class="viz-controls" aria-label="3D 보기">
+    <button class="btn" type="button" data-layout="current" aria-pressed="false">사진 기준</button>
+    <button class="btn" type="button" data-layout="proposed" aria-pressed="true">정리안</button>
+    <button class="btn" type="button" id="mooncar-explode" aria-pressed="false">분해 보기</button>
+    <label class="form-label">시점
+      <select class="form-select" id="mooncar-view">
+        <option value="orbit">사선 · 자유 회전</option>
+        <option value="top">상단</option>
+        <option value="front">전면</option>
+        <option value="side">측면</option>
+      </select>
+    </label>
+  </div>
+  <div id="mooncar-stage" aria-label="RC카 3D 모델. 드래그해서 회전하고 휠이나 확대 버튼으로 크기를 조절하세요.">
+    <div id="mooncar-canvas"></div>
+    <span id="mooncar-forward" aria-hidden="true">↑ 전방</span>
+    <div class="viz-row mooncar-zoom">
+      <button class="btn" type="button" data-zoom="in" aria-label="모델 확대">＋</button>
+      <button class="btn" type="button" data-zoom="out" aria-label="모델 축소">−</button>
+    </div>
+  </div>
+  <div class="viz-controls">
+    <label class="form-label">부품·핀
+      <select class="form-select" id="mooncar-part">
+        <option value="all">전체</option>
+        <option value="front">전방 초음파</option>
+        <option value="left">좌측 초음파</option>
+        <option value="right">우측 초음파</option>
+        <option value="interface">센서 배선 기판</option>
+        <option value="controller">NUCLEO-F411RE</option>
+        <option value="driver">모터 드라이버</option>
+        <option value="radio">ZS-040 블루투스</option>
+        <option value="battery">배터리</option>
+        <option value="camera">ESP32-CAM · AR</option>
+      </select>
+    </label>
+    <label class="form-check"><input class="form-check-input" id="mooncar-wires" type="checkbox" checked> 배선 경로</label>
+    <button class="btn" type="button" id="mooncar-tray" aria-pressed="false">배터리 빼기</button>
+    <label class="form-check"><input class="form-check-input" id="mooncar-sight" type="checkbox"> 카메라 방향</label>
+  </div>
+  <div id="mooncar-detail" aria-live="polite"></div>
+  <p class="text-small text-muted">사진과 코드 기준의 개념 모델 · 외형, 각도, 장착 홀은 실차에서 확인</p>
+</section>
+<style>
+  #mooncar-layout { display:grid; gap:calc(var(--font-size-base, 14px) * .7); color:var(--foreground, #172126); }
+  #mooncar-layout h2, #mooncar-layout p { margin:0; }
+  #mooncar-layout .viz-controls { align-items:center; }
+  #mooncar-stage { position:relative; height:clamp(280px, 54vw, 500px); overflow:hidden; background:radial-gradient(ellipse at 50% 44%, color-mix(in srgb, var(--foreground,#172126) 9%, var(--background,#fff)), var(--background,#fff) 76%); }
+  #mooncar-canvas, #mooncar-canvas canvas { width:100%; height:100%; display:block; touch-action:none; }
+  #mooncar-canvas canvas { cursor:grab; }
+  #mooncar-canvas canvas:active { cursor:grabbing; }
+  #mooncar-forward { position:absolute; left:0; top:0; pointer-events:none; color:var(--muted-foreground,#52616a); }
+  #mooncar-stage .mooncar-zoom { position:absolute; bottom:0; right:0; }
+  #mooncar-detail { min-height:3em; }
+  #mooncar-detail p + p { margin-top:.35em; }
+</style>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+
+// Model coordinates in millimeters. +Z is forward, +X is vehicle left.
+function buildCar(layout, exploded, showWires, trayOut = false, showSight = false) {
+  const draft = layout === 'proposed';
+  const root = new THREE.Group();
+  root.name = draft ? 'MoonCar - revised layout' : 'MoonCar - photo layout';
+  const material = (color, roughness = .48, metalness = 0) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  const acrylic = material(0xc7dfe5, .3);
+  const bracket = material(0x91b3be, .33);
+  const brass = material(0xc49a55, .35, .55);
+  const silver = material(0xc5d2da, .28, .65);
+  const tire = material(0x232931, .84);
+  const tread = material(0x323943, .84);
+  const hub = material(0xf6bf2e);
+  const shadowYellow = material(0xae7215);
+  const dark = material(0x151e26);
+  const white = material(0xf1f1eb);
+  const blue = material(0x176097);
+  const green = material(0x17836e);
+  const red = material(0xb64434);
+  const gold = material(0xffcd7d, .42, .3);
+  const signal = material(0x36a0ff);
+  const power = material(0xe76b32);
+  const motorWire = material(0xa54ec8);
+  const parts = {};
+  const topY = exploded ? 129 : 79;
+  const group = (name, parent, position = [0,0,0]) => {
+    const object = new THREE.Group();
+    object.name = name;
+    object.position.set(...position);
+    parent.add(object);
+    return object;
+  };
+  const part = (key, name, parent, position) => parts[key] = group(name, parent, position);
+  const mesh = (geometry, mat, parent, position, rotation = [0,0,0]) => {
+    const object = new THREE.Mesh(geometry, mat);
+    object.position.set(...position);
+    object.rotation.set(...rotation);
+    parent.add(object);
+    return object;
+  };
+  const box = (parent, mat, position, dimensions, rotation) =>
+    mesh(new THREE.BoxGeometry(...dimensions), mat, parent, position, rotation);
+  const cyl = (parent, mat, position, radius, length, rotation, segments = 32) =>
+    mesh(new THREE.CylinderGeometry(radius, radius, length, segments), mat, parent, position, rotation);
+  const screw = (parent,x,y,z) => cyl(parent,silver,[x,y,z],2.4,1.8,[0,0,0],12);
+  const xAxis = [0,0,Math.PI/2];
+  const zAxis = [Math.PI/2,0,0];
+
+  function deck(name, y) {
+    const outline = new THREE.Shape();
+    outline.moveTo(-62,-107);
+    outline.quadraticCurveTo(0,-127,62,-107);
+    outline.lineTo(65,-83);
+    outline.lineTo(50,-79);
+    outline.lineTo(50,-27);
+    outline.lineTo(62,-23);
+    outline.lineTo(62,23);
+    outline.lineTo(50,27);
+    outline.lineTo(50,79);
+    outline.lineTo(65,83);
+    outline.lineTo(62,107);
+    outline.quadraticCurveTo(0,127,-62,107);
+    outline.lineTo(-65,83);
+    outline.lineTo(-50,79);
+    outline.lineTo(-50,27);
+    outline.lineTo(-62,23);
+    outline.lineTo(-62,-23);
+    outline.lineTo(-50,-27);
+    outline.lineTo(-50,-79);
+    outline.lineTo(-65,-83);
+    outline.closePath();
+    for (const side of [-1,1]) {
+      for (const end of [-1,1]) {
+        const slot = new THREE.Path();
+        const x = 33 * side;
+        const v = 104 * end;
+        slot.moveTo(x - 15,v - 2.2);
+        slot.lineTo(x + 15,v - 2.2);
+        slot.quadraticCurveTo(x + 20,v,x + 15,v + 2.2);
+        slot.lineTo(x - 15,v + 2.2);
+        slot.quadraticCurveTo(x - 20,v,x - 15,v - 2.2);
+        outline.holes.push(slot);
+      }
+      for (const z of [-92,-16,16,92]) {
+        const hole = new THREE.Path();
+        hole.absarc(side * 55,z,2.5,0,2*Math.PI,true);
+        outline.holes.push(hole);
+      }
+    }
+    const layer = group(name,root,[0,y,0]);
+    mesh(new THREE.ExtrudeGeometry(outline,{depth:3, bevelEnabled:false, curveSegments:12}), acrylic, layer,[0,0,0],[-Math.PI/2,0,0]);
+    return layer;
+  }
+
+  const bottom = deck('Lower acrylic deck',18);
+  const top = deck('Upper acrylic deck',topY);
+  for (const side of [-1,1]) {
+    for (const z of [-90,0,90]) {
+      cyl(root,brass,[side*52,49,z],2.7,58,[0,0,0],6);
+      screw(top,side*52,4,z);
+    }
+    for (const z of [-55,55]) {
+      const wheel = group(z > 0 ? 'Front wheel' : 'Rear wheel',root,[side*66,31,z]);
+      cyl(wheel,tire,[0,0,0],30,25,xAxis,48);
+      cyl(wheel,shadowYellow,[side*12.7,0,0],23,1.3,xAxis);
+      cyl(wheel,hub,[side*14.1,0,0],9,3.8,xAxis);
+      mesh(new THREE.TorusGeometry(22,2.25,8,40),hub,wheel,[side*13.3,0,0],[0,Math.PI/2,0]);
+      for (let i=0; i<5; i+=1) {
+        const angle = i*2*Math.PI/5;
+        box(wheel,hub,[side*13.5,14*Math.cos(angle),14*Math.sin(angle)],[2.5,15,6.5],[angle,0,0]);
+      }
+      for (let i=0; i<32; i+=1) {
+        const angle = i*2*Math.PI/32;
+        for (const offset of [-6,6]) {
+          box(wheel,tread,[offset,30*Math.cos(angle),30*Math.sin(angle)],[10,1.7,3.9],[angle,offset/40,0]);
+        }
+      }
+      const motor = group('Geared DC motor',bottom,[side*40,11,z]);
+      box(motor,hub,[0,0,0],[17,21,30]);
+      cyl(motor,silver,[0,0,z>0?-22:22],9,20,zAxis);
+      cyl(motor,silver,[side*12,0,0],2.5,13,xAxis);
+      box(motor,bracket,[0,-8,0],[19,5,16]);
+    }
+  }
+
+  const packZ = draft ? 74 : 78;
+  const battery = part('battery','Front-loading drive battery tray',bottom,[0,4,packZ+(draft && trayOut ? 86 : 0)]);
+  if (draft) {
+    const rails = group('Fixed battery guides and power socket',bottom);
+    for (const x of [-27.8,27.8]) {
+      box(rails,bracket,[x,7,69],[3,8,60]);
+      screw(rails,x,11,45);
+      screw(rails,x,11,90);
+    }
+    box(rails,bracket,[0,5,34],[48,4,4]);
+    box(rails,bracket,[0,4,112],[17,2,7]);
+    box(rails,green,[32,8,104],[8,7,12]);
+    box(battery,green,[0,5,43],[21,7,11]);
+    box(battery,brass,[0,8,43],[10,3,7]);
+    box(battery,dark,[23,7,31],[6,6,10]);
+  }
+  box(battery,dark,[0,1,0],[48,3,76]);
+  for (const x of [-24,0,24]) box(battery,dark,[x,8,0],[3,15,76]);
+  for (const z of [-38,38]) box(battery,dark,[0,8,z],[48,15,3]);
+  for (const [x,color] of [[-12,0x9b6dad],[12,0x278abf]]) {
+    if (draft) box(battery,green,[x,5,-2],[18,2,10]);
+    cyl(battery,material(color),[x,10,0],9,65,zAxis);
+    for (const end of [-1,1]) cyl(battery,silver,[x,10,end*33],7,1.2,zAxis);
+    if (draft) box(battery,green,[x,17,33],[9,2,7]);
+  }
+  if (draft) {
+    const cameraPower = group('Separate 5V USB power bank',bottom,[0,10,-8]);
+    box(cameraPower,dark,[0,0,0],[44,12,60]);
+    box(cameraPower,bracket,[0,5,-8],[47,2,11]);
+    box(cameraPower,silver,[0,0,-30],[12,5,1.1]);
+    box(cameraPower,green,[0,5.95,17],[12,.3,2]);
+  }
+
+  const ctrl = part('controller','NUCLEO-F411RE',top,[0,8,draft ? -47 : -42]);
+  ctrl.rotation.y = draft ? 0 : Math.PI/2;
+  box(ctrl,draft ? bracket : dark,[0,-3,0],[74,3,87]);
+  box(ctrl,white,[0,0,0],[70,1.8,82]);
+  if (draft) {
+    for (const x of [-31,31]) {
+      for (const z of [-34,34]) {
+        cyl(ctrl,brass,[x,-1.8,z],2.5,2.3,[0,0,0],6);
+        screw(ctrl,x,1.6,z);
+      }
+    }
+  }
+  for (const x of [-27,27]) {
+    box(ctrl,dark,[x,4,8],[5,6,52]);
+    for (let i=0; i<19; i+=1) box(ctrl,gold,[x,7.2,-15+i*2.54],[1,1,1]);
+  }
+  box(ctrl,dark,[0,2,9],[11,2.5,11],[0,Math.PI/4,0]);
+  box(ctrl,dark,[-4,2,-25],[7,2.4,7]);
+  box(ctrl,silver,[0,3,-39],[11,5,9]);
+  box(ctrl,dark,[0,3,-43.6],[7,2.6,.7]);
+  for (const x of [-12,12]) cyl(ctrl,blue,[x,2.2,-10],2.3,2);
+
+  const board = part('interface',draft ? 'Sensor distribution board' : 'Breadboard',top,[0,7,draft ? 34 : 50]);
+  if (!draft) board.rotation.y = -.22;
+  box(board,draft ? green : white,[0,0,0],draft ? [87,2,30] : [92,7,44]);
+  if (draft) {
+    for (const x of [-25,0,25]) {
+      box(board,white,[x,4,5],[13,7,8]);
+      box(board,dark,[x,5,9.2],[10,3,.7]);
+      for (const dx of [-3,3]) box(board,brass,[x+dx,2,-5],[2,2,8]);
+    }
+  } else {
+    for (let col=0; col<26; col+=1) {
+      for (const z of [-16,-11,-8,-5,5,8,11,16]) box(board,dark,[-40+col*3.2,3.55,z],[.9,.22,.9]);
+    }
+    box(board,blue,[0,3.6,-19],[87,.22,.5]);
+    box(board,red,[0,3.6,19],[87,.22,.5]);
+  }
+
+  const radio = part('radio','ZS-040 Bluetooth',top,[draft ? 47 : -24, draft ? 6 : 18,draft ? -28 : 56]);
+  if (!draft) radio.rotation.x = .9;
+  box(radio,green,[0,0,0],[16,1.7,33]);
+  box(radio,blue,[0,1.2,-4],[13,1.7,18]);
+  box(radio,gold,[0,1.1,11],[11,.4,6]);
+  for (let i=0; i<6; i+=1) box(radio,gold,[-6+i*2.4,1.4,-14],[.6,.7,3.5]);
+
+  const driver = part('driver','Motor driver (illustrative)',bottom,[0,9,-75]);
+  box(driver,red,[0,0,0],[46,2.2,40]);
+  for (let i=0; i<6; i+=1) box(driver,dark,[-12+i*4.8,6,-4],[2,10,22]);
+  for (const x of [-16,16]) box(driver,blue,[x,4,12],[12,6,9]);
+  box(driver,green,[0,4,-16],[23,6,7]);
+
+  for (const [key,x,angle] of [['right',-50,-Math.PI/6],['front',0,0],['left',50,Math.PI/6]]) {
+    const sensor = part(key, key+' HC-SR04',top,[x,15, key==='front' ? 112 : 99]);
+    sensor.rotation.y = angle;
+    box(sensor,bracket,[0,-10,-4],[43,3,15]);
+    box(sensor,bracket,[0,-2,-4],[43,17,2.8]);
+    box(sensor,blue,[0,0,0],[43,21,1.5]);
+    for (const dx of [-13,13]) {
+      cyl(sensor,silver,[dx,0,4.5],8,8,zAxis);
+      cyl(sensor,tire,[dx,0,8.65],6.65,.35,zAxis);
+      for (let i=-2; i<=2; i+=1) {
+        box(sensor,tread,[dx+i*2,0,8.9],[.34,10-Math.abs(i)*1.4,.16]);
+      }
+    }
+    box(sensor,dark,[0,11,-2],[10,5,4]);
+    for (let i=0; i<4; i+=1) box(sensor,gold,[-3.75+i*2.5,13,-2],[.5,2,.5]);
+  }
+
+  if (draft) {
+    const cam = part('camera','ESP32-CAM fixed centerline mount',top,[0,0,92]);
+    box(cam,bracket,[0,5,0],[36,4,22]);
+    for (const x of [-13,13]) {
+      box(cam,bracket,[x,19,0],[4,24,14]);
+      screw(cam,x,7,7);
+      screw(cam,x,7,-7);
+    }
+    const cameraModule = group('ESP32-CAM-MB and OV2640',cam,[0,33,1]);
+    cameraModule.rotation.x = 8*Math.PI/180;
+    box(cameraModule,dark,[0,0,-3],[29,27,4]);
+    box(cameraModule,green,[0,0,0],[26,24,2]);
+    box(cameraModule,dark,[0,2,2],[13,13,3]);
+    cyl(cameraModule,dark,[0,2,4.6],5.6,4,zAxis);
+    cyl(cameraModule,blue,[0,2,6.8],3.5,.5,zAxis);
+    box(cameraModule,silver,[0,-10,-5],[8,4,3]);
+    if (showSight) {
+      const lens = new THREE.Vector3(0,2,7);
+      const corners = [[-31,-17],[31,-17],[31,17],[-31,17]].map(([x,y]) => new THREE.Vector3(x,y+2,69));
+      const paths = corners.flatMap((corner,index) => [lens,corner,corner,corners[(index+1)%4]]);
+      const guide = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(paths),new THREE.LineBasicMaterial({color:0x328eb1,transparent:true,opacity:.64}));
+      guide.name = 'Camera direction guide (illustrative)';
+      cameraModule.add(guide);
+    }
+  }
+
+  function cable(parent, mat, points, radius = .85) {
+    const curve = new THREE.CatmullRomCurve3(points.map(point => new THREE.Vector3(...point)));
+    mesh(new THREE.TubeGeometry(curve, 22, radius, 7, false), mat, parent,[0,0,0]);
+  }
+  if (showWires) {
+    for (const [index,key] of ['right','front','left'].entries()) {
+      const sensor = parts[key];
+      const x = sensor.position.x;
+      const z = sensor.position.z;
+      for (const [offset,mat] of [[-1.5,signal],[1.5,power]]) {
+        cable(top,mat,[[x+offset,28,z-3],[x+offset,draft?19:45+index*4,z-16],[(draft?x*.58:x*.8)+offset,draft?13:36,61],[x*.5+offset,11,draft?40:52]]);
+      }
+    }
+    cable(top,signal,[[21,11,draft?24:38],[30,11,16],[30,11,0],[27,15,draft?-25:-19]],1.35);
+    if (draft) cable(top,signal,[[45,8,-39],[42,12,-49],[27,15,-48]],1);
+    if (!exploded) {
+      cable(root,signal,[[-25,topY+14,-56],[-43,topY+7,-64],[-44,68,-79],[-36,37,-86],[-13,33,-91]],1.2);
+    } else {
+      cable(top,signal,[[-25,14,-56],[-43,7,-64],[-44,1,-79]],1.2);
+      cable(bottom,signal,[[-44,47,-79],[-35,19,-86],[-13,15,-91]],1.2);
+    }
+    if (draft) {
+      cable(bottom,power,[[34,9,104],[34,8,44],[28,7,5],[28,9,-52],[14,14,-65]],1.25);
+      if (!trayOut) cable(bottom,power,[[25,12,105],[28,16,114],[33,13,112],[34,10,105]],1);
+      if (!exploded) {
+        cable(root,power,[[0,28,-40],[-26,32,-41],[-41,52,14],[-42,topY+8,51],[-17,topY+8,78],[0,topY+22,89]],1);
+      }
+    } else {
+      cable(bottom,power,[[-19,13,packZ-30],[-30,10,packZ-37],[-29,10,-60],[-14,14,-65]],1.25);
+    }
+    for (const side of [-1,1]) {
+      for (const [i, z] of [-55,55].entries()) {
+        cable(bottom,motorWire,[[side*17,15,-65],[side*(32+i*3),10,-58],[side*(32+i*3),7,z>0?41:-48],[side*40,11,z]],.95);
+      }
+    }
+  }
+  return { root, parts };
+}
+
+const host = document.getElementById('mooncar-layout');
+const stage = host.querySelector('#mooncar-canvas');
+const detail = host.querySelector('#mooncar-detail');
+const partSelect = host.querySelector('#mooncar-part');
+const view = host.querySelector('#mooncar-view');
+const explode = host.querySelector('#mooncar-explode');
+const wiring = host.querySelector('#mooncar-wires');
+const tray = host.querySelector('#mooncar-tray');
+const sight = host.querySelector('#mooncar-sight');
+const trayIsOut = () => layout === 'proposed' && tray.getAttribute('aria-pressed') === 'true';
+const sightIsOn = () => layout === 'proposed' && sight.checked;
+const status = {
+  all: ['파랑 · 신호선　 주황 · 전원선　 보라 · 모터선', '배선은 경로를 나타냅니다. 실물 핀 연결은 부품을 선택해 확인하세요.'],
+  front: ['전방 HC-SR04 · TRIG PB0 (CN7-34) · ECHO PB1 (CN10-24)', '정면 0° · ECHO는 전압 분배기를 거쳐 입력'],
+  left: ['좌측 HC-SR04 · TRIG PC4 (CN10-34) · ECHO PC5 (CN10-6)', '진행 방향 기준 왼쪽 바깥으로 약 30° · ECHO는 전압 분배기를 거쳐 입력'],
+  right: ['우측 HC-SR04 · TRIG PC6 (CN10-4) · ECHO PC7 (CN10-19)', '진행 방향 기준 오른쪽 바깥으로 약 30° · ECHO는 전압 분배기를 거쳐 입력'],
+  interface: ['센서마다 5V / GND / TRIG / ECHO를 한 커넥터로 묶는 안', 'ECHO → 2.2 kΩ → STM32 입력. STM32 입력 → 3.3 kΩ → 공통 GND. 5V 입력 기준 약 3.0V.'],
+  controller: ['NUCLEO-F411RE · CN7 / CN10 Morpho 헤더', '정리안은 USB를 후방으로 돌리고, 상판에 보드 장착용 스페이서를 둡니다.'],
+  driver: ['A 우측 · PWM PA0 (CN7-28) · IN1 PC0 (CN7-38) · IN2 PC1 (CN7-36)', 'B 좌측 · PWM PA1 (CN7-30) · IN1 PC2 (CN7-35) · IN2 PC3 (CN7-37)', 'A/B 좌우는 펌웨어 기본값입니다. 드라이버 실물 단자와 Nucleo의 CN7-36/38 솔더 브리지 설정을 확인하세요.'],
+  radio: ['ZS-040 · STM32 PA9 (CN10-21) TX → RXD · PA10 (CN10-33) RX ← TXD', 'USART1 · 9600 baud · 공통 GND · VCC는 실물 기판 규격 확인'],
+  battery: ['전면 인출식 주행 배터리 트레이 · 손잡이, 잠금 탭, 셀 리본', '전원을 끄고 옆 전원 커넥터를 뺀 뒤 잠금 탭을 눌러 트레이를 전면으로 빼는 구조입니다.'],
+  camera: ['ESP32-CAM · 전방 중앙, 센서 위 · 아래로 8° 기울인 고정 브래킷', '하판의 별도 5V USB 전원 · Wi-Fi 영상 · STM32 GPIO 연결 없음', '카메라 방향 가이드는 개념 표시입니다. 실물 영상으로 가림과 각도를 확인하세요.']
+};
+let layout = 'proposed';
+let car;
+let azimuth = .70;
+let elevation = .61;
+let zoom = 1;
+let aspect = 1;
+let renderer;
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1,1,1,-1,1,1600);
+scene.add(new THREE.HemisphereLight(0xffffff,0x8a9cb5,2.3));
+const keyLight = new THREE.DirectionalLight(0xfff1dd,2.2);
+keyLight.position.set(-170,240,110);
+scene.add(keyLight);
+const fill = new THREE.DirectionalLight(0xc5dcff,1.3);
+fill.position.set(140,95,-180);
+scene.add(fill);
+const selectedBounds = new THREE.Box3();
+const boxHighlight = new THREE.Box3Helper(selectedBounds,0x249cf1);
+boxHighlight.visible = false;
+scene.add(boxHighlight);
+
+function draw() {
+  if (!renderer || !car) return;
+  const extended = trayIsOut() || sightIsOn();
+  const target = new THREE.Vector3(0,explode.getAttribute('aria-pressed') === 'true' ? 78 : 56,extended ? 40 : 0);
+  const size = (extended ? 180 : 142) / zoom;
+  const vertical = Math.max(size,size/aspect);
+  camera.left = -vertical*aspect;
+  camera.right = vertical*aspect;
+  camera.top = vertical;
+  camera.bottom = -vertical;
+  camera.position.set(
+    target.x + 420*Math.sin(azimuth)*Math.cos(elevation),
+    target.y + 420*Math.sin(elevation),
+    target.z + 420*Math.cos(azimuth)*Math.cos(elevation));
+  camera.up.set(0,1,0);
+  camera.lookAt(target);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+  const origin = target.clone().project(camera);
+  const heading = target.clone().add(new THREE.Vector3(0,0,30)).project(camera);
+  const sideways = (heading.x-origin.x)*aspect;
+  const upwards = heading.y-origin.y;
+  const arrows = ['↑','↗','→','↘','↓','↙','←','↖'];
+  const index = (Math.round(Math.atan2(sideways,upwards)/(Math.PI/4))+8)%8;
+  host.querySelector('#mooncar-forward').textContent = Math.hypot(sideways,upwards) < .055 ? '전면' : arrows[index]+' 전방';
+  renderer.render(scene,camera);
+}
+
+function refreshPart() {
+  const selected = partSelect.value;
+  const lines = [...status[selected]];
+  if (layout === 'current' && selected === 'camera') lines.splice(0,lines.length,'카메라 위치는 정리안에서 볼 수 있습니다.');
+  if (layout === 'current' && selected === 'battery') lines.splice(0,lines.length,'사진 기준 · 하판 전면에 돌출된 배터리 홀더');
+  detail.replaceChildren(...lines.map(line => {
+    const element = document.createElement('p');
+    element.textContent = line;
+    return element;
+  }));
+  const object = car?.parts[selected];
+  boxHighlight.visible = Boolean(object);
+  if (object) {
+    selectedBounds.makeEmpty();
+    object.updateWorldMatrix(true,true);
+    const worldBounds = new THREE.Box3();
+    object.traverse(child => {
+      if (!child.isMesh) return;
+      child.geometry.computeBoundingBox();
+      selectedBounds.union(worldBounds.copy(child.geometry.boundingBox).applyMatrix4(child.matrixWorld));
+    });
+  }
+  draw();
+}
+
+function rebuild() {
+  if (car) {
+    scene.remove(car.root);
+    const materials = new Set();
+    car.root.traverse(object => {
+      if (!object.geometry) return;
+      object.geometry.dispose();
+      materials.add(object.material);
+    });
+    for (const mat of materials) mat.dispose();
+  }
+  tray.disabled = sight.disabled = layout === 'current';
+  car = buildCar(layout,explode.getAttribute('aria-pressed') === 'true',wiring.checked,trayIsOut(),sightIsOn());
+  scene.add(car.root);
+  refreshPart();
+}
+
+const setZoom = value => { zoom = Math.min(2.5,Math.max(.65,value)); draw(); };
+for (const button of host.querySelectorAll('[data-layout]')) button.addEventListener('click',() => {
+  layout = button.dataset.layout;
+  for (const option of host.querySelectorAll('[data-layout]')) option.setAttribute('aria-pressed',option === button);
+  rebuild();
+});
+for (const button of host.querySelectorAll('[data-zoom]')) button.addEventListener('click',() => setZoom(zoom*(button.dataset.zoom === 'in' ? 1.18 : 1/1.18)));
+explode.addEventListener('click',() => {
+  explode.setAttribute('aria-pressed',explode.getAttribute('aria-pressed') !== 'true');
+  rebuild();
+});
+wiring.addEventListener('change',rebuild);
+tray.addEventListener('click',() => {
+  const open = !trayIsOut();
+  tray.setAttribute('aria-pressed',open);
+  tray.textContent = open ? '배터리 넣기' : '배터리 빼기';
+  partSelect.value = 'battery';
+  rebuild();
+});
+sight.addEventListener('change',() => {
+  if (sight.checked) partSelect.value = 'camera';
+  rebuild();
+});
+partSelect.addEventListener('change',refreshPart);
+view.addEventListener('change',() => {
+  const presets = { orbit:[.70,.61], top:[Math.PI,Math.PI/2-.001], front:[0,.01], side:[Math.PI/2,.06] };
+  [azimuth,elevation] = presets[view.value];
+  draw();
+});
+try {
+  renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = .88;
+  stage.append(renderer.domElement);
+  const canvas = renderer.domElement;
+  let drag;
+  canvas.addEventListener('pointerdown',event => {
+    if (event.button !== 0 || drag) return;
+    drag = { id:event.pointerId,x:event.clientX,y:event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove',event => {
+    if (drag?.id !== event.pointerId) return;
+    azimuth -= (event.clientX-drag.x)*.012;
+    elevation = Math.min(Math.PI/2-.001,Math.max(-1.15,elevation+(event.clientY-drag.y)*.012));
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+    view.value = 'orbit';
+    draw();
+  });
+  canvas.addEventListener('lostpointercapture',event => { if (drag?.id === event.pointerId) drag = null; });
+  canvas.addEventListener('wheel',event => { event.preventDefault(); setZoom(zoom*Math.exp(-event.deltaY*.001)); },{passive:false});
+  new ResizeObserver(() => {
+    if (!stage.clientWidth || !stage.clientHeight) return;
+    aspect = stage.clientWidth/stage.clientHeight;
+    renderer.setSize(stage.clientWidth,stage.clientHeight,false);
+    draw();
+  }).observe(stage);
+} catch (error) {
+  console.error(error);
+  stage.textContent = '이 환경에서는 3D 화면을 표시할 수 없습니다. 아래에서 부품별 핀을 확인할 수 있습니다.';
+}
+rebuild();
+</script>

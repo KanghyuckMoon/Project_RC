@@ -7,6 +7,8 @@ ZS-040은 USART1 PA9/PA10을 사용합니다. 실제 배선과 앱 설정은 현
 
 - [HC-SR04 배선과 측정](Core/Src/Dirver/Ultrasonic/README.md)
 - [ZS-040 배선과 앱 명령 설정](Core/Src/Dirver/Bluetooth/README.md)
+- [ESP32-CAM 펌웨어 업로드와 MoonCar 앱 FPV 주행](ESP32Cam/README.md)
+- [MoonCarGame 레이스와 체크포인트 카드](MobileController/README.md#mooncargame)
 - `A`는 수동에서 자율주행으로 전환하고 새 센서 측정값을 받은 뒤 자동으로 출발합니다. `S`는 정지하고, 자율주행에서 `F`로 재개합니다. `M`은 정지 후 수동으로 전환합니다.
 - 수동 모드의 방향·속도 조작과 500ms 명령 타임아웃은 이전과 같습니다. 자율 모드에선 `F` 이외의 방향 명령과 속도 명령을 무시합니다. 자율 주행 중에는 명령 반복 전송이 필요 없습니다.
 - 새로 출발할 때 전방이 50cm 이상이고 양옆이 12cm보다 멀거나 반사파가 없으면 전진합니다. 한쪽 벽이 30cm 안에 있고 반대쪽에 여유가 있으면 두 바퀴의 PWM을 다르게 줘 벽에서 멀어집니다.

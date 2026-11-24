@@ -19,6 +19,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -28,6 +29,7 @@ import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -35,7 +37,7 @@ import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
 
-public final class MainActivity extends Activity {
+public class MainActivity extends Activity {
     private static final int BACKGROUND = 0xff0d1016;
     private static final int PANEL = 0xff171b24;
     private static final int BORDER = 0xff303644;
@@ -53,6 +55,12 @@ public final class MainActivity extends Activity {
     private final DriveController drive = new DriveController(link::send);
     private final Runnable telemetryDeadline = () -> clearTelemetry("센서 정보 수신 없음");
     private final Runnable pairingTimeout = () -> cancelPairing("페어링 시간이 초과됐습니다");
+    private final Runnable cameraRefresh = new Runnable() {
+        @Override public void run() {
+            updateCamera();
+            main.postDelayed(this, 40);
+        }
+    };
     private final BroadcastReceiver pairingReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -70,6 +78,7 @@ public final class MainActivity extends Activity {
         private int sensorTicks;
 
         @Override public void run() {
+            onControlTick();
             drive.repeat(sensorTicks == 0);
             sensorTicks = (sensorTicks + 1) % 3;
             main.postDelayed(this, 120);
@@ -84,6 +93,17 @@ public final class MainActivity extends Activity {
     private LinearLayout root;
     private TextView connectionStatus;
     private Button connectionButton;
+    private Button cameraButton;
+    private CameraStream camera;
+    private CameraStream.Frame displayedFrame;
+    private FrameLayout cameraPanel;
+    private LinearLayout modeCard;
+    private View modeTitle;
+    private LinearLayout modeButtons;
+    private ImageView cameraImage;
+    private TextView cameraStatus;
+    private boolean cameraEnabled;
+    private long cameraStartedAt;
     private Button manualButton;
     private Button autoButton;
     private TextView modeStatus;
@@ -110,7 +130,9 @@ public final class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_SPLIT_TOUCH,
                 WindowManager.LayoutParams.FLAG_SPLIT_TOUCH);
+        camera = new CameraStream(this);
         buildScreen();
+        if (requiresCamera()) setCameraEnabled(true);
         render();
     }
 
@@ -128,6 +150,7 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         foreground = true;
+        if (cameraEnabled) startCamera();
         main.post(repeat);
         hideBars();
         finishPairing();
@@ -138,6 +161,7 @@ public final class MainActivity extends Activity {
         foreground = false;
         main.removeCallbacks(repeat);
         main.removeCallbacks(telemetryDeadline);
+        stopCamera();
         if (picker != null) {
             picker.dismiss();
             picker = null;
@@ -149,6 +173,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         clearPairing();
+        camera.close();
         super.onDestroy();
     }
 
@@ -186,7 +211,8 @@ public final class MainActivity extends Activity {
 
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
-        TextView brand = label("MOONCAR", 22, ACCENT, true);
+        TextView brand = label(screenTitle(), 22, ACCENT, true);
+        brand.setSingleLine(true);
         brand.setLetterSpacing(0.10f);
         header.addView(brand, new LinearLayout.LayoutParams(0, -1, 1));
         connectionStatus = label("연결 안 됨", 13, MUTED, false);
@@ -195,6 +221,13 @@ public final class MainActivity extends Activity {
         connectionStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         header.addView(connectionStatus, new LinearLayout.LayoutParams(0, -1, 1));
         connectionStatus.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
+        cameraButton = button("FPV 켜기", 13);
+        styleButton(cameraButton, 0xff232c34, TEXT);
+        cameraButton.setOnClickListener(view -> toggleCamera());
+        if (requiresCamera()) cameraButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams cameraParams = new LinearLayout.LayoutParams(-2, -1);
+        cameraParams.leftMargin = dp(12);
+        header.addView(cameraButton, cameraParams);
         connectionButton = button("블루투스 연결", 13);
         styleButton(connectionButton, 0xff232c34, ACCENT);
         connectionButton.setOnClickListener(view -> {
@@ -212,7 +245,8 @@ public final class MainActivity extends Activity {
         bodyParams.topMargin = dp(10);
         root.addView(body, bodyParams);
         addCard(body, steeringPanel(), 1.2f);
-        addCard(body, modePanel(), 1.05f);
+        modeCard = modePanel();
+        addCard(body, modeCard, 1.05f);
         addCard(body, pedalPanel(), 1.02f);
 
         LinearLayout.LayoutParams telemetryParams = new LinearLayout.LayoutParams(-1, dp(53));
@@ -251,29 +285,118 @@ public final class MainActivity extends Activity {
 
     private LinearLayout modePanel() {
         LinearLayout card = panel("주행 모드");
-        LinearLayout modes = row();
+        modeTitle = card.getChildAt(0);
+        modeButtons = row();
         manualButton = button("수동", 14);
         autoButton = button("자율주행", 14);
         manualButton.setOnClickListener(view -> switchMode(false));
         autoButton.setOnClickListener(view -> switchMode(true));
-        modes.addView(manualButton, new LinearLayout.LayoutParams(0, -1, 1));
+        modeButtons.addView(manualButton, new LinearLayout.LayoutParams(0, -1, 1));
         LinearLayout.LayoutParams autoParams = new LinearLayout.LayoutParams(0, -1, 1.24f);
         autoParams.leftMargin = dp(5);
-        modes.addView(autoButton, autoParams);
+        modeButtons.addView(autoButton, autoParams);
+        View raceAction = createDriveAction();
+        if (raceAction != null) {
+            manualButton.setVisibility(View.GONE);
+            autoButton.setVisibility(View.GONE);
+            modeButtons.addView(raceAction, new LinearLayout.LayoutParams(0, -1, 2));
+        }
         LinearLayout.LayoutParams modeParams = new LinearLayout.LayoutParams(-1, dp(44));
         modeParams.topMargin = dp(5);
-        card.addView(modes, modeParams);
+        card.addView(modeButtons, modeParams);
 
         modeStatus = label("연결 대기", 17, TEXT, true);
         modeStatus.setGravity(Gravity.CENTER);
         modeStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         card.addView(modeStatus, new LinearLayout.LayoutParams(-1, 0, 1));
 
+        cameraPanel = new FrameLayout(this);
+        cameraPanel.setBackground(shape(0xff080b10, BORDER));
+        cameraPanel.setClipToOutline(true);
+        cameraPanel.setVisibility(View.GONE);
+        cameraImage = new ImageView(this);
+        cameraImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        cameraImage.setContentDescription("RC카 전방 카메라 영상");
+        cameraPanel.addView(cameraImage, new FrameLayout.LayoutParams(-1, -1));
+        View overlay = createCameraOverlay();
+        if (overlay != null) cameraPanel.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        cameraStatus = label("", 13, TEXT, true);
+        cameraStatus.setPadding(dp(6), 0, dp(6), 0);
+        cameraStatus.setGravity(Gravity.CENTER);
+        cameraPanel.addView(cameraStatus, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(-1, 0, 1);
+        card.addView(cameraPanel, 1, previewParams);
+
         stop = button("■  정지", 16);
         styleButton(stop, 0xff47282f, RED);
         stop.setOnClickListener(view -> stopDriving());
         card.addView(stop, new LinearLayout.LayoutParams(-1, dp(48)));
         return card;
+    }
+
+    private void toggleCamera() {
+        stopDriving();
+        setCameraEnabled(!cameraEnabled);
+    }
+
+    private void setCameraEnabled(boolean enabled) {
+        cameraEnabled = enabled;
+        cameraButton.setText(cameraEnabled ? "FPV 끄기" : "FPV 켜기");
+        cameraPanel.setVisibility(cameraEnabled ? View.VISIBLE : View.GONE);
+        modeTitle.setVisibility(cameraEnabled ? View.GONE : View.VISIBLE);
+        modeStatus.setLayoutParams(cameraEnabled
+                ? new LinearLayout.LayoutParams(-1, dp(24))
+                : new LinearLayout.LayoutParams(-1, 0, 1));
+        if (cameraEnabled) {
+            modeCard.removeView(stop);
+            LinearLayout.LayoutParams stopParams = new LinearLayout.LayoutParams(0, -1, 1.14f);
+            stopParams.leftMargin = dp(5);
+            modeButtons.addView(stop, stopParams);
+        } else {
+            modeButtons.removeView(stop);
+            modeCard.addView(stop, new LinearLayout.LayoutParams(-1, dp(48)));
+        }
+        LinearLayout.LayoutParams cardParams = (LinearLayout.LayoutParams) modeCard.getLayoutParams();
+        cardParams.weight = cameraEnabled ? 2.4f : 1.05f;
+        modeCard.setLayoutParams(cardParams);
+        if (cameraEnabled && foreground) startCamera();
+        else stopCamera();
+        render();
+    }
+
+    private void startCamera() {
+        cameraStartedAt = SystemClock.elapsedRealtime();
+        cameraStatus.setText("RC-CAM 영상 연결 중");
+        camera.start();
+        main.post(cameraRefresh);
+    }
+
+    private void stopCamera() {
+        main.removeCallbacks(cameraRefresh);
+        camera.stop();
+        showCameraFrame(null);
+    }
+
+    private void updateCamera() {
+        CameraStream.Frame frame = camera.latest();
+        long now = SystemClock.elapsedRealtime();
+        if (frame != null && now - frame.receivedAt >= CameraStream.FRAME_TIMEOUT_MS) frame = null;
+        boolean wasLive = displayedFrame != null;
+        showCameraFrame(frame);
+        String waiting = "영상 대기 · RC-CAM Wi-Fi 확인";
+        if (frame == null && now - cameraStartedAt >= CameraStream.FRAME_TIMEOUT_MS) {
+            if (!waiting.contentEquals(cameraStatus.getText())) cameraStatus.setText(waiting);
+        }
+        if (wasLive && frame == null) stopDriving();
+        else if (!wasLive && frame != null) render();
+    }
+
+    private void showCameraFrame(CameraStream.Frame frame) {
+        if (displayedFrame == frame) return;
+        displayedFrame = frame;
+        cameraImage.setImageBitmap(frame == null ? null : frame.bitmap);
+        cameraStatus.setVisibility(frame == null ? View.VISIBLE : View.GONE);
+        onCameraFrame(frame);
     }
 
     private LinearLayout pedalPanel() {
@@ -344,7 +467,7 @@ public final class MainActivity extends Activity {
         render();
     }
 
-    private void stopDriving() {
+    protected final void stopDriving() {
         drive.stop();
         resetVisualInputs();
         render();
@@ -458,26 +581,37 @@ public final class MainActivity extends Activity {
         main.postDelayed(telemetryDeadline, 1800);
     }
 
-    private void render() {
+    protected final void render() {
         boolean connected = linkState == BluetoothLink.State.CONNECTED;
+        boolean canDrive = connected && (!cameraEnabled || displayedFrame != null) && allowsDriving();
         boolean manual = drive.mode() == DriveController.Mode.MANUAL;
         boolean autoMoving = drive.mode() == DriveController.Mode.AUTO_MOVING;
         manualControls.setVisibility(manual ? View.VISIBLE : View.GONE);
         autoControls.setVisibility(manual ? View.GONE : View.VISIBLE);
-        wheel.setEnabled(connected && manual);
+        wheel.setEnabled(canDrive && manual);
         wheel.setAlpha(manual ? 1f : 0.38f);
-        speedControl.setEnabled(connected);
-        pedal.setEnabled(connected);
-        reversePedal.setEnabled(connected);
-        autoStart.setEnabled(connected && !autoMoving);
+        speedControl.setEnabled(canDrive);
+        pedal.setEnabled(canDrive);
+        reversePedal.setEnabled(canDrive);
+        autoStart.setEnabled(canDrive && !autoMoving);
         stop.setEnabled(connected);
         manualButton.setEnabled(connected);
-        autoButton.setEnabled(connected);
+        autoButton.setEnabled(canDrive);
         styleButton(manualButton, manual ? ACCENT : 0xff252b37, manual ? BACKGROUND : TEXT);
         styleButton(autoButton, manual ? 0xff252b37 : ACCENT, manual ? TEXT : BACKGROUND);
         showModeStatus();
         showSpeed();
     }
+
+    protected String screenTitle() { return "MOONCAR"; }
+    protected boolean requiresCamera() { return false; }
+    protected boolean allowsDriving() { return true; }
+    protected View createDriveAction() { return null; }
+    protected View createCameraOverlay() { return null; }
+    protected void onControlTick() {}
+    protected void onCameraFrame(CameraStream.Frame frame) {}
+    protected final boolean hasVehicleLink() { return linkState == BluetoothLink.State.CONNECTED; }
+    protected final boolean hasLiveVideo() { return displayedFrame != null; }
 
     private void showModeStatus() {
         if (linkState != BluetoothLink.State.CONNECTED) modeStatus.setText("연결 대기");
@@ -646,7 +780,7 @@ public final class MainActivity extends Activity {
         return label;
     }
 
-    private Button button(String text, int size) {
+    protected final Button button(String text, int size) {
         Button button = new Button(this);
         button.setAllCaps(false);
         button.setText(text);
@@ -661,7 +795,7 @@ public final class MainActivity extends Activity {
         return button;
     }
 
-    private void styleButton(Button button, int background, int text) {
+    protected final void styleButton(Button button, int background, int text) {
         int[][] states = {{-android.R.attr.state_enabled}, {}};
         button.setTextColor(new ColorStateList(states, new int[]{0xff9ba3b1, text}));
         android.graphics.drawable.StateListDrawable fills = new android.graphics.drawable.StateListDrawable();

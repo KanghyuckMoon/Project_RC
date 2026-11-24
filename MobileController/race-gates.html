@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoonCarGame 체크포인트 카드</title>
+  <style>
+    @page { size: A4 landscape; margin: 12mm; }
+    body { margin: 0; color: #111; background: white; font: 17px system-ui, sans-serif; }
+    section { box-sizing: border-box; margin: 0 auto; padding: 6mm 0; break-inside: avoid; }
+    section + section { break-before: page; }
+    h1 { margin: 0 0 7mm; text-align: center; font-size: 25px; }
+    svg { width: min(240mm, 100%); height: auto; display: block; margin: 0 auto; }
+    p { margin: 6mm 0 0; text-align: center; }
+    @media screen { section + section { border-top: 1px solid #ddd; } }
+  </style>
+</head>
+<body>
+  <section>
+    <h1>MoonCarGame · 체크포인트 1</h1>
+    <svg viewBox="0 0 240 115" role="img" aria-label="왼쪽 분홍, 오른쪽 청록">
+      <rect width="120" height="115" fill="#e916b9"/>
+      <rect x="120" width="120" height="115" fill="#00c9e8"/>
+    </svg>
+    <p>다가오는 차량 카메라 쪽을 향하게 세워 주세요.</p>
+  </section>
+  <section>
+    <h1>MoonCarGame · 체크포인트 2</h1>
+    <svg viewBox="0 0 240 115" role="img" aria-label="왼쪽 청록, 오른쪽 분홍">
+      <rect width="120" height="115" fill="#00c9e8"/>
+      <rect x="120" width="120" height="115" fill="#e916b9"/>
+    </svg>
+    <p>다가오는 차량 카메라 쪽을 향하게 세워 주세요.</p>
+  </section>
+  <section>
+    <h1>MoonCarGame · 체크포인트 3</h1>
+    <svg viewBox="0 0 240 115" role="img" aria-label="왼쪽 노랑, 오른쪽 청록">
+      <rect width="120" height="115" fill="#efd414"/>
+      <rect x="120" width="120" height="115" fill="#00c9e8"/>
+    </svg>
+    <p>다가오는 차량 카메라 쪽을 향하게 세워 주세요.</p>
+  </section>
+  <section>
+    <h1>MoonCarGame · 결승선 4</h1>
+    <svg viewBox="0 0 240 115" role="img" aria-label="왼쪽 청록, 오른쪽 노랑">
+      <rect width="120" height="115" fill="#00c9e8"/>
+      <rect x="120" width="120" height="115" fill="#efd414"/>
+    </svg>
+    <p>3번을 지난 차량이 정면으로 볼 수 있도록 세워 주세요.</p>
+  </section>
+</body>
+</html>

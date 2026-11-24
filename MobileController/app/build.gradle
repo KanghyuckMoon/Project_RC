@@ -14,6 +14,17 @@ android {
         versionName '1.4'
     }
 
+    flavorDimensions 'edition'
+    productFlavors {
+        controller {
+            dimension 'edition'
+        }
+        game {
+            dimension 'edition'
+            applicationIdSuffix '.game'
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
